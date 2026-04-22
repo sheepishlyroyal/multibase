@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multibase — Demo</title>
+    <style>
+      :root {
+        --border: #e4e4e7;
+        --muted: #71717a;
+        --bg-soft: #f4f4f5;
+        --accent: #2563eb;
+      }
+      * { box-sizing: border-box; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        max-width: 760px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        color: #18181b;
+        line-height: 1.5;
+      }
+      h1 { margin-bottom: 0.25rem; }
+      h2 { margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
+      p.tagline { color: var(--muted); margin-top: 0; }
+      input, textarea, button {
+        font: inherit;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+      }
+      input, textarea { width: 100%; margin-bottom: 0.5rem; }
+      textarea { resize: vertical; min-height: 4rem; }
+      button {
+        background: var(--accent);
+        color: white;
+        border-color: var(--accent);
+        cursor: pointer;
+      }
+      button.secondary {
+        background: white;
+        color: var(--accent);
+      }
+      button:hover { opacity: 0.9; }
+      .note {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.75rem 1rem;
+        margin: 0.5rem 0;
+      }
+      .note-title { font-weight: 600; }
+      .note-meta { color: var(--muted); font-size: 0.85rem; margin-top: 0.25rem; }
+      .note-meta a { color: var(--muted); margin-left: 0.5rem; }
+      .stats {
+        background: var(--bg-soft);
+        border-radius: 6px;
+        padding: 0.75rem 1rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.9rem;
+      }
+      .stats div { margin: 0.15rem 0; }
+      .empty { color: var(--muted); font-style: italic; }
+      .error {
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        color: #991b1b;
+        padding: 0.75rem 1rem;
+        border-radius: 6px;
+        margin: 1rem 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Multibase Demo</h1>
+    <p class="tagline">
+      A unified database sharded across multiple Firebase projects. Each note is
+      routed to one shard by a hash of its id; listing fans out to every shard.
+    </p>
+
+    <div id="error" class="error" hidden></div>
+
+    <h2>Create a note</h2>
+    <input id="input-title" placeholder="Title" />
+    <textarea id="input-body" placeholder="Body"></textarea>
+    <button id="btn-add">Add note</button>
+
+    <h2>All notes</h2>
+    <button id="btn-refresh" class="secondary">Refresh</button>
+    <div id="notes"></div>
+
+    <h2>Shard distribution</h2>
+    <div id="stats" class="stats"></div>
+
+    <script type="module">
+      import { Multibase } from "../src/multibase.js";
+      import { FIREBASE_CONFIGS } from "./firebase-config.js";
+
+      const COLLECTION_NAME = "notes";
+      const errorEl = document.getElementById("error");
+
+      let multibase;
+      try {
+        multibase = new Multibase(FIREBASE_CONFIGS).init();
+      } catch (err) {
+        showError(
+          `Failed to initialize Multibase: ${err.message}. ` +
+            `Make sure firebase-config.js contains at least one real config.`
+        );
+        throw err;
+      }
+
+      const titleInput = document.getElementById("input-title");
+      const bodyInput = document.getElementById("input-body");
+      const notesEl = document.getElementById("notes");
+      const statsEl = document.getElementById("stats");
+
+      document.getElementById("btn-add").addEventListener("click", onAddNote);
+      document.getElementById("btn-refresh").addEventListener("click", refresh);
+
+      refresh().catch((err) =>
+        showError(`Load failed: ${err.message}. Check Firestore rules and configs.`)
+      );
+
+      async function onAddNote() {
+        const title = titleInput.value.trim();
+        const body = bodyInput.value.trim();
+        if (!title && !body) return;
+        try {
+          await multibase.set(COLLECTION_NAME, null, {
+            title,
+            body,
+            createdAt: Date.now(),
+          });
+          titleInput.value = "";
+          bodyInput.value = "";
+          clearError();
+          await refresh();
+        } catch (err) {
+          showError(`Write failed: ${err.message}`);
+        }
+      }
+
+      async function onDeleteNote(docId) {
+        try {
+          await multibase.delete(COLLECTION_NAME, docId);
+          await refresh();
+        } catch (err) {
+          showError(`Delete failed: ${err.message}`);
+        }
+      }
+
+      async function refresh() {
+        const notes = await multibase.list(COLLECTION_NAME, {
+          orderBy: "_updatedAt",
+          orderDir: "desc",
+        });
+        renderNotes(notes);
+
+        const stats = await multibase.count(COLLECTION_NAME);
+        renderStats(stats);
+      }
+
+      function renderNotes(notes) {
+        if (notes.length === 0) {
+          notesEl.innerHTML = `<p class="empty">No notes yet — add one above.</p>`;
+          return;
+        }
+        notesEl.innerHTML = notes
+          .map(
+            (note) => `
+              <div class="note">
+                <div class="note-title">${escapeHtml(note.title || "(untitled)")}</div>
+                <div>${escapeHtml(note.body || "")}</div>
+                <div class="note-meta">
+                  shard ${note._shardIndex} · id ${escapeHtml(note.id)}
+                  <a href="#" data-delete-id="${escapeHtml(note.id)}">delete</a>
+                </div>
+              </div>
+            `
+          )
+          .join("");
+        notesEl.querySelectorAll("[data-delete-id]").forEach((link) => {
+          link.addEventListener("click", (event) => {
+            event.preventDefault();
+            onDeleteNote(link.getAttribute("data-delete-id"));
+          });
+        });
+      }
+
+      function renderStats({ total, perShard }) {
+        const shardInfo = multibase.getShardInfo();
+        const rows = perShard
+          .map(({ shardIndex, count }) => {
+            const projectId = shardInfo[shardIndex].projectId;
+            return `<div>shard ${shardIndex} (${escapeHtml(projectId)}) — ${count} docs</div>`;
+          })
+          .join("");
+        statsEl.innerHTML = `<div><strong>total: ${total} docs</strong></div>${rows}`;
+      }
+
+      function showError(message) {
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+      }
+
+      function clearError() {
+        errorEl.hidden = true;
+        errorEl.textContent = "";
+      }
+
+      function escapeHtml(value) {
+        return String(value).replace(/[&<>"']/g, (ch) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        }[ch]));
+      }
+    </script>
+  </body>
+</html>
