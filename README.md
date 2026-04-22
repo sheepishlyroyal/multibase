@@ -16,19 +16,21 @@ the number of projects you add.
 
 ```
 multibase/
-├── src/
-│   └── multibase.js          # the library — no dependencies
+├── multibase.js                   # the core library — no dependencies
+├── multibase-images.js            # optional helper: base64-chunk images/blobs
 ├── demo/
-│   ├── index.html                 # demo app (notes CRUD + shard stats)
+│   ├── index.html                 # demo app (notes, images, shard stats)
 │   └── firebase-config.example.js # config template — copy to firebase-config.js
 ├── README.md
 ├── LICENSE                        # MIT
 └── .gitignore                     # ignores demo/firebase-config.js
 ```
 
-Three things to know:
+Four things to know:
 
-- **`src/`** is the library. Drop `multibase.js` into your own app to use it.
+- **`multibase.js`** is the core library. Drop it into your own app to use it.
+- **`multibase-images.js`** is an optional add-on that base64-encodes and
+  chunks binary blobs (images, PDFs, small files) across shards.
 - **`demo/`** is a self-contained demonstration. It's the only part of the repo
   that needs your Firebase configs.
 - **`demo/firebase-config.js`** is gitignored on purpose — your local copy holds
@@ -59,6 +61,8 @@ Three things to know:
   results client-side.
 - Document ids don't encode the shard — the same hash is used to find them
   again, so anyone who knows the id (and the shard count) can locate the doc.
+- Image chunks use deterministic ids (`<imageId>_<N>`), so different chunks
+  of the same image naturally spread across shards and download in parallel.
 
 ---
 
@@ -142,17 +146,15 @@ Run through these to confirm everything's wired up:
 - [ ] **Reload the page.** All notes should come back — proves they actually
   persisted to Firestore, not just to memory.
 - [ ] **Delete a note.** It disappears and the total count drops.
-- [ ] **Verify in the Firebase console.** Open each project → Firestore → the
-  `notes` collection. The docs you see on each project should match the
-  per-shard counts in the UI.
-- [ ] **Use the library from devtools.** Open the browser console on the demo
-  page and try the API directly:
-
-  ```javascript
-  // mfb is not exposed globally by default — run this once to grab it:
-  const mfb = (await import("../src/multibase.js")).Multibase;
-  // or just re-run operations via the visible UI
-  ```
+- [ ] **Paste an image** (⌘V / Ctrl+V anywhere on the page). Or drop one on
+  the zone. It uploads, encodes, chunks, and appears in the gallery.
+- [ ] **Reload.** Images persist and render correctly (the thumbnail comes
+  from re-downloading the chunks and decoding).
+- [ ] **Delete an image.** Its manifest and every chunk disappear.
+- [ ] **Verify in the Firebase console.** Each project → Firestore. Notes
+  live in a `notes` collection. Images live in two collections: `images`
+  (manifests) and `imageChunks` (the base64 parts). Counts per project
+  should match the UI's shard distribution.
 
 ### Common gotchas
 
@@ -163,16 +165,18 @@ Run through these to confirm everything's wired up:
 | Notes only appear on one shard                    | `FIREBASE_CONFIGS` has only one entry, or all entries point to the same project. |
 | CORS / `file://` errors in console                | You opened `index.html` directly. Serve it via `npx serve .` instead.         |
 | One shard empty, others full                      | Expected for small N — FNV-1a distributes well but not perfectly for <20 docs. |
+| Image upload hangs or errors at ~1 MB            | A chunk exceeded Firestore's doc size limit. Lower `chunkSize` in the `MultibaseImages` constructor. |
 
 ---
 
 ## Using the library in your own project
 
-Copy `src/multibase.js` into your app. It has no build step and no npm
-dependencies — it pulls Firebase straight from the gstatic CDN.
+Copy `multibase.js` (and `multibase-images.js` if you want image support)
+into your app. No build step, no npm dependencies — Firebase loads from the
+gstatic CDN.
 
 ```javascript
-import { Multibase } from "./path/to/multibase.js";
+import { Multibase } from "./multibase.js";
 
 const db = new Multibase([
   { apiKey: "...", projectId: "my-app-shard-1", /* ... */ },
@@ -235,6 +239,79 @@ db.generateId();        // 20-char auto id (same shape as Firestore's)
 
 ---
 
+## Images, PDFs, and other binary blobs
+
+`multibase-images.js` is an optional helper that base64-encodes binary data
+and splits it into chunks small enough to fit in Firestore's 1 MiB per-doc
+limit. Chunks are sharded by the core library, so a big image's reads and
+writes distribute across your projects automatically.
+
+```javascript
+import { Multibase } from "./multibase.js";
+import { MultibaseImages } from "./multibase-images.js";
+
+const db = new Multibase(FIREBASE_CONFIGS).init();
+const images = new MultibaseImages(db);
+
+// Upload — `blob` can be a File, a Blob, or anything from a paste/drop event
+const imageId = await images.upload(blob, { originalName: blob.name });
+
+// Download as a Blob (for offline use, FileReader, createObjectURL, etc.)
+const blob2 = await images.download(imageId);
+
+// Download as a data URL — drop straight into <img src="...">
+const dataUrl = await images.downloadAsDataURL(imageId);
+
+// Just the raw base64 (no `data:` prefix)
+const base64 = await images.downloadAsBase64(imageId);
+
+// Just the manifest — cheap, one read, no chunks
+const info = await images.getManifest(imageId);
+// → { id, mimeType, byteSize, chunkCount, chunkSize, ... }
+
+// List every image (manifests only, never the chunks)
+const all = await images.list({ orderBy: "_updatedAt", orderDir: "desc" });
+
+// Delete the manifest and every chunk
+await images.delete(imageId);
+```
+
+### How an upload flows
+
+1. The Blob is read as a data URL via `FileReader`, then stripped down to
+   the raw base64 text.
+2. The text is split into chunks of `chunkSize` characters (default 750 KB).
+3. A **manifest doc** is written first in the `images` collection, holding
+   `mimeType`, `byteSize`, `chunkCount`, and any metadata you passed in.
+4. Each chunk is written to the `imageChunks` collection with the
+   deterministic id `<imageId>_<chunkIndex>`. Because chunk ids differ, the
+   core library spreads them across shards for parallel I/O.
+
+Download is the reverse: fetch the manifest, fan out `chunkCount` reads in
+parallel, sort by `chunkIndex`, concatenate, and decode.
+
+### Tuning
+
+Pass options to the constructor:
+
+```javascript
+const images = new MultibaseImages(db, {
+  manifestCollection: "photos",       // default: "images"
+  chunkCollection: "photoChunks",     // default: "imageChunks"
+  chunkSize: 500 * 1024,              // default: 750 KB
+});
+```
+
+Firestore's per-doc limit is 1 MiB including field names. Default chunk size
+(750 KB of base64, ≈562 KB of binary) leaves plenty of headroom.
+
+> **Firestore is not a real blob store.** For lots of large images, use
+> Firebase Storage, S3, or R2. `multibase-images` exists so you can
+> prototype binary features without standing up object storage and its
+> security rules — or so you can stay in the Spark plan while you iterate.
+
+---
+
 ## Metadata fields
 
 Every written document gets two reserved fields automatically:
@@ -264,13 +341,17 @@ Don't write to these yourself.
   write a migration that re-hashes and moves each doc.
 - **OrderBy on merged results only works on fields present in every doc.**
   Missing values sort to the end.
+- **Images are expensive.** Each image costs 1 manifest write + N chunk
+  writes, and listing the gallery costs 1 manifest read + N chunk reads per
+  image. For real binary-heavy workloads, use Firebase Storage.
 
 ---
 
 ## Contributing
 
 Issues and PRs welcome. The library is deliberately small — if you're adding
-surface area, keep the "zero dependencies, single file" constraint in mind.
+surface area, keep the "zero dependencies, single file" constraint in mind
+for `multibase.js` itself.
 
 ---
 

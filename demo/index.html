@@ -23,13 +23,14 @@
       h1 { margin-bottom: 0.25rem; }
       h2 { margin-top: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
       p.tagline { color: var(--muted); margin-top: 0; }
+      p.hint { color: var(--muted); font-size: 0.9rem; margin-top: 0; }
       input, textarea, button {
         font: inherit;
         padding: 0.5rem 0.75rem;
         border: 1px solid var(--border);
         border-radius: 6px;
       }
-      input, textarea { width: 100%; margin-bottom: 0.5rem; }
+      input[type="text"], textarea { width: 100%; margin-bottom: 0.5rem; }
       textarea { resize: vertical; min-height: 4rem; }
       button {
         background: var(--accent);
@@ -42,6 +43,7 @@
         color: var(--accent);
       }
       button:hover { opacity: 0.9; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
       .note {
         border: 1px solid var(--border);
         border-radius: 6px;
@@ -56,7 +58,7 @@
         border-radius: 6px;
         padding: 0.75rem 1rem;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 0.9rem;
+        font-size: 0.85rem;
       }
       .stats div { margin: 0.15rem 0; }
       .empty { color: var(--muted); font-style: italic; }
@@ -68,19 +70,71 @@
         border-radius: 6px;
         margin: 1rem 0;
       }
+      .drop-zone {
+        display: block;
+        border: 2px dashed var(--border);
+        border-radius: 6px;
+        padding: 2rem 1rem;
+        text-align: center;
+        color: var(--muted);
+        cursor: pointer;
+        transition: border-color 0.15s, color 0.15s;
+        user-select: none;
+      }
+      .drop-zone:hover,
+      .drop-zone.dragover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .drop-zone.busy {
+        border-color: var(--accent);
+        color: var(--accent);
+        cursor: progress;
+      }
+      .image-gallery {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+        gap: 0.5rem;
+        margin-top: 1rem;
+      }
+      .image-card {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 0.5rem;
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .image-card img {
+        max-width: 100%;
+        max-height: 150px;
+        object-fit: contain;
+        border-radius: 4px;
+      }
+      .image-meta {
+        color: var(--muted);
+        font-size: 0.8rem;
+        margin-top: 0.35rem;
+      }
+      .image-meta a {
+        color: var(--muted);
+        margin-left: 0.5rem;
+      }
     </style>
   </head>
   <body>
     <h1>Multibase Demo</h1>
     <p class="tagline">
-      A unified database sharded across multiple Firebase projects. Each note is
-      routed to one shard by a hash of its id; listing fans out to every shard.
+      A unified database sharded across multiple Firebase projects. Notes and
+      image chunks are routed to one shard by a hash of their id; lists fan
+      out to every shard.
     </p>
 
     <div id="error" class="error" hidden></div>
 
     <h2>Create a note</h2>
-    <input id="input-title" placeholder="Title" />
+    <input type="text" id="input-title" placeholder="Title" />
     <textarea id="input-body" placeholder="Body"></textarea>
     <button id="btn-add">Add note</button>
 
@@ -88,19 +142,36 @@
     <button id="btn-refresh" class="secondary">Refresh</button>
     <div id="notes"></div>
 
+    <h2>Images</h2>
+    <p class="hint">
+      Paste (⌘V / Ctrl+V anywhere on the page), drop a file, or click the
+      zone to pick one. Each image is base64-encoded, split into ~750 KB
+      chunks, and sharded across your Firebase projects.
+    </p>
+    <label class="drop-zone" id="drop-zone">
+      <span id="drop-zone-label">Click, drop, or paste an image</span>
+      <input type="file" id="input-image" accept="image/*" hidden multiple />
+    </label>
+    <div id="images" class="image-gallery"></div>
+
     <h2>Shard distribution</h2>
     <div id="stats" class="stats"></div>
 
     <script type="module">
-      import { Multibase } from "../src/multibase.js";
+      import { Multibase } from "../multibase.js";
+      import { MultibaseImages } from "../multibase-images.js";
       import { FIREBASE_CONFIGS } from "./firebase-config.js";
 
-      const COLLECTION_NAME = "notes";
+      const NOTES_COLLECTION = "notes";
+      const IMAGES_COLLECTION = "images";
+      const IMAGE_CHUNKS_COLLECTION = "imageChunks";
+
       const errorEl = document.getElementById("error");
 
-      let multibase;
+      let multibase, imageStore;
       try {
         multibase = new Multibase(FIREBASE_CONFIGS).init();
+        imageStore = new MultibaseImages(multibase);
       } catch (err) {
         showError(
           `Failed to initialize Multibase: ${err.message}. ` +
@@ -113,20 +184,54 @@
       const bodyInput = document.getElementById("input-body");
       const notesEl = document.getElementById("notes");
       const statsEl = document.getElementById("stats");
+      const dropZone = document.getElementById("drop-zone");
+      const dropZoneLabel = document.getElementById("drop-zone-label");
+      const fileInput = document.getElementById("input-image");
+      const imagesEl = document.getElementById("images");
 
       document.getElementById("btn-add").addEventListener("click", onAddNote);
-      document.getElementById("btn-refresh").addEventListener("click", refresh);
+      document.getElementById("btn-refresh").addEventListener("click", refreshAll);
 
-      refresh().catch((err) =>
+      fileInput.addEventListener("change", (event) => {
+        handleFiles([...event.target.files]);
+        event.target.value = "";
+      });
+      dropZone.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        dropZone.classList.add("dragover");
+      });
+      dropZone.addEventListener("dragleave", () =>
+        dropZone.classList.remove("dragover")
+      );
+      dropZone.addEventListener("drop", (event) => {
+        event.preventDefault();
+        dropZone.classList.remove("dragover");
+        const files = [...event.dataTransfer.files].filter((f) =>
+          f.type.startsWith("image/")
+        );
+        if (files.length) handleFiles(files);
+      });
+      document.addEventListener("paste", (event) => {
+        const items = event.clipboardData?.items || [];
+        const files = [...items]
+          .filter((item) => item.type.startsWith("image/"))
+          .map((item) => item.getAsFile())
+          .filter(Boolean);
+        if (files.length) handleFiles(files);
+      });
+
+      refreshAll().catch((err) =>
         showError(`Load failed: ${err.message}. Check Firestore rules and configs.`)
       );
+
+      // --- Notes ---------------------------------------------------------
 
       async function onAddNote() {
         const title = titleInput.value.trim();
         const body = bodyInput.value.trim();
         if (!title && !body) return;
         try {
-          await multibase.set(COLLECTION_NAME, null, {
+          await multibase.set(NOTES_COLLECTION, null, {
             title,
             body,
             createdAt: Date.now(),
@@ -134,7 +239,7 @@
           titleInput.value = "";
           bodyInput.value = "";
           clearError();
-          await refresh();
+          await refreshAll();
         } catch (err) {
           showError(`Write failed: ${err.message}`);
         }
@@ -142,22 +247,87 @@
 
       async function onDeleteNote(docId) {
         try {
-          await multibase.delete(COLLECTION_NAME, docId);
-          await refresh();
+          await multibase.delete(NOTES_COLLECTION, docId);
+          await refreshAll();
         } catch (err) {
           showError(`Delete failed: ${err.message}`);
         }
       }
 
-      async function refresh() {
-        const notes = await multibase.list(COLLECTION_NAME, {
+      // --- Images --------------------------------------------------------
+
+      async function handleFiles(files) {
+        dropZone.classList.add("busy");
+        dropZoneLabel.textContent = `Uploading ${files.length} image${
+          files.length === 1 ? "" : "s"
+        }…`;
+        try {
+          for (const file of files) {
+            await imageStore.upload(file, {
+              originalName: file.name || null,
+              createdAt: Date.now(),
+            });
+          }
+          clearError();
+          await refreshImages();
+          await refreshStats();
+        } catch (err) {
+          showError(`Image upload failed: ${err.message}`);
+        } finally {
+          dropZone.classList.remove("busy");
+          dropZoneLabel.textContent = "Click, drop, or paste an image";
+        }
+      }
+
+      async function onDeleteImage(imageId) {
+        try {
+          await imageStore.delete(imageId);
+          await refreshImages();
+          await refreshStats();
+        } catch (err) {
+          showError(`Image delete failed: ${err.message}`);
+        }
+      }
+
+      // --- Rendering -----------------------------------------------------
+
+      async function refreshAll() {
+        await Promise.all([refreshNotes(), refreshImages(), refreshStats()]);
+      }
+
+      async function refreshNotes() {
+        const notes = await multibase.list(NOTES_COLLECTION, {
           orderBy: "_updatedAt",
           orderDir: "desc",
         });
         renderNotes(notes);
+      }
 
-        const stats = await multibase.count(COLLECTION_NAME);
-        renderStats(stats);
+      async function refreshImages() {
+        const manifests = await imageStore.list({
+          orderBy: "_updatedAt",
+          orderDir: "desc",
+        });
+        const withData = await Promise.all(
+          manifests.map(async (manifest) => ({
+            ...manifest,
+            dataUrl: await imageStore.downloadAsDataURL(manifest.id),
+          }))
+        );
+        renderImages(withData);
+      }
+
+      async function refreshStats() {
+        const [notesStats, imageStats, chunkStats] = await Promise.all([
+          multibase.count(NOTES_COLLECTION),
+          multibase.count(IMAGES_COLLECTION),
+          multibase.count(IMAGE_CHUNKS_COLLECTION),
+        ]);
+        renderStats({
+          notes: notesStats,
+          images: imageStats,
+          chunks: chunkStats,
+        });
       }
 
       function renderNotes(notes) {
@@ -187,16 +357,51 @@
         });
       }
 
-      function renderStats({ total, perShard }) {
+      function renderImages(images) {
+        if (images.length === 0) {
+          imagesEl.innerHTML = `<p class="empty">No images yet.</p>`;
+          return;
+        }
+        imagesEl.innerHTML = images
+          .map(
+            (img) => `
+              <div class="image-card">
+                <img src="${img.dataUrl}" alt="${escapeHtml(img.originalName || img.id)}" />
+                <div class="image-meta">
+                  ${formatBytes(img.byteSize)} · ${img.chunkCount} chunk${
+              img.chunkCount === 1 ? "" : "s"
+            }
+                  <br><a href="#" data-delete-image-id="${escapeHtml(img.id)}">delete</a>
+                </div>
+              </div>
+            `
+          )
+          .join("");
+        imagesEl.querySelectorAll("[data-delete-image-id]").forEach((link) => {
+          link.addEventListener("click", (event) => {
+            event.preventDefault();
+            onDeleteImage(link.getAttribute("data-delete-image-id"));
+          });
+        });
+      }
+
+      function renderStats({ notes, images, chunks }) {
         const shardInfo = multibase.getShardInfo();
-        const rows = perShard
-          .map(({ shardIndex, count }) => {
-            const projectId = shardInfo[shardIndex].projectId;
-            return `<div>shard ${shardIndex} (${escapeHtml(projectId)}) — ${count} docs</div>`;
+        const rows = shardInfo
+          .map(({ index, projectId }) => {
+            const n = notes.perShard.find((s) => s.shardIndex === index)?.count ?? 0;
+            const i = images.perShard.find((s) => s.shardIndex === index)?.count ?? 0;
+            const c = chunks.perShard.find((s) => s.shardIndex === index)?.count ?? 0;
+            return `<div>shard ${index} (${escapeHtml(projectId)}) — ${n} notes, ${i} images, ${c} chunks</div>`;
           })
           .join("");
-        statsEl.innerHTML = `<div><strong>total: ${total} docs</strong></div>${rows}`;
+        statsEl.innerHTML = `
+          <div><strong>totals:</strong> ${notes.total} notes, ${images.total} images, ${chunks.total} chunks</div>
+          ${rows}
+        `;
       }
+
+      // --- Utils ---------------------------------------------------------
 
       function showError(message) {
         errorEl.textContent = message;
@@ -209,13 +414,20 @@
       }
 
       function escapeHtml(value) {
-        return String(value).replace(/[&<>"']/g, (ch) => ({
+        return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
           "&": "&amp;",
           "<": "&lt;",
           ">": "&gt;",
           '"': "&quot;",
           "'": "&#39;",
         }[ch]));
+      }
+
+      function formatBytes(bytes) {
+        if (bytes == null) return "–";
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+        return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
       }
     </script>
   </body>
