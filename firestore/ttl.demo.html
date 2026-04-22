@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>firestore/ttl — demo</title>
+    <style>
+      body { font: 14px/1.5 system-ui; max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+      .item { border: 1px solid #e4e4e7; padding: .5rem .75rem; border-radius: 6px; margin: .25rem 0; }
+      button { padding: .4rem .8rem; margin-right: .5rem; border: 1px solid #e4e4e7; border-radius: 6px; background: white; cursor: pointer; }
+      input { padding: .4rem .6rem; border: 1px solid #e4e4e7; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <h1>firestore/ttl demo</h1>
+    <p>
+      Write a message with a short TTL. Watch it drop off the list once it
+      expires. The list is filtered client-side on each refresh; the doc
+      still exists in Firestore until you click "Purge expired".
+    </p>
+    <div>
+      <input id="msg" placeholder="message" />
+      <input id="ttl" type="number" value="30" min="1" style="width: 80px" />
+      seconds
+      <button id="add">Add</button>
+      <button id="purge">Purge expired</button>
+    </div>
+    <div id="items"></div>
+
+    <script type="module">
+      import { Multibase } from "../multibase.js";
+      import { FIREBASE_CONFIGS } from "../multibase.config.js";
+      const mb = new Multibase(FIREBASE_CONFIGS).init();
+      const $ = (id) => document.getElementById(id);
+
+      $("add").onclick = async () => {
+        await mb.firestore.ttl.set(
+          "ephemeral",
+          null,
+          { msg: $("msg").value || "tick" },
+          { ttlMs: Number($("ttl").value) * 1000 }
+        );
+        $("msg").value = "";
+        refresh();
+      };
+
+      $("purge").onclick = async () => {
+        const n = await mb.firestore.ttl.purgeExpired("ephemeral");
+        alert(`Purged ${n} expired doc(s).`);
+        refresh();
+      };
+
+      async function refresh() {
+        const live = await mb.firestore.ttl.list("ephemeral", {
+          orderBy: "_updatedAt",
+        });
+        if (live.length === 0) {
+          $("items").innerHTML = "<em>(none)</em>";
+          return;
+        }
+        $("items").innerHTML = live
+          .map((d) => {
+            const secs = Math.max(
+              0,
+              Math.round((d._expiresAt - Date.now()) / 1000)
+            );
+            return `<div class="item">${escapeHtml(d.msg)} <small>· expires in ${secs}s</small></div>`;
+          })
+          .join("");
+      }
+
+      function escapeHtml(v) {
+        return String(v ?? "").replace(/[&<>"']/g, (c) =>
+          ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+        );
+      }
+
+      refresh();
+      setInterval(refresh, 1000);
+    </script>
+  </body>
+</html>

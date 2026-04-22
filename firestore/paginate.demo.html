@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>firestore/paginate — demo</title>
+    <style>
+      body { font: 14px/1.5 system-ui; max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+      .item { border: 1px solid #e4e4e7; padding: .5rem .75rem; border-radius: 6px; margin: .25rem 0; }
+      button { padding: .4rem .8rem; margin-right: .5rem; border: 1px solid #e4e4e7; border-radius: 6px; background: white; cursor: pointer; }
+      input { padding: .4rem .6rem; border: 1px solid #e4e4e7; border-radius: 6px; }
+      .status { color: #71717a; font-size: .85rem; }
+    </style>
+  </head>
+  <body>
+    <h1>firestore/paginate demo</h1>
+    <p>
+      Add some notes, then click "Load next 5" to paginate through them.
+      Each page carries a per-shard cursor — look at the status line.
+    </p>
+    <div>
+      <input id="title" placeholder="new note title" />
+      <button id="add">Add note</button>
+    </div>
+    <hr />
+    <div>
+      <button id="load">Load next 5</button>
+      <button id="reset">Reset</button>
+    </div>
+    <div id="items"></div>
+    <p class="status" id="status"></p>
+
+    <script type="module">
+      import { Multibase } from "../multibase.js";
+      import { FIREBASE_CONFIGS } from "../multibase.config.js";
+      const mb = new Multibase(FIREBASE_CONFIGS).init();
+      const $ = (id) => document.getElementById(id);
+
+      let cursor = null, done = false;
+
+      $("add").onclick = async () => {
+        const t = $("title").value.trim() || "(untitled)";
+        await mb.write("notes", { title: t, created: Date.now() });
+        $("title").value = "";
+      };
+
+      $("load").onclick = async () => {
+        const page = await mb.firestore.paginate.page("notes", {
+          pageSize: 5,
+          cursor,
+        });
+        for (const item of page.items) {
+          $("items").insertAdjacentHTML(
+            "beforeend",
+            `<div class="item">${escapeHtml(item.title ?? "(untitled)")} <small>· shard ${item._shardIndex} · ${item.id.slice(0, 6)}…</small></div>`
+          );
+        }
+        cursor = page.cursor;
+        done = page.done;
+        $("status").textContent = done
+          ? `Reached end. cursor = ${JSON.stringify(cursor)}`
+          : `Loaded ${page.items.length}. cursor = ${JSON.stringify(cursor)}`;
+        $("load").disabled = done;
+      };
+
+      $("reset").onclick = () => {
+        cursor = null;
+        done = false;
+        $("items").innerHTML = "";
+        $("status").textContent = "";
+        $("load").disabled = false;
+      };
+
+      function escapeHtml(v) {
+        return String(v).replace(/[&<>"']/g, (c) =>
+          ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+        );
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>audio/storage — demo</title>
+    <style>
+      body { font: 14px/1.5 system-ui; max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+      .drop { display: block; border: 2px dashed #d4d4d8; padding: 2rem; text-align: center; border-radius: 6px; cursor: pointer; color: #71717a; }
+      .drop:hover { border-color: #2563eb; color: #2563eb; }
+      .item { border: 1px solid #e4e4e7; padding: .6rem .75rem; border-radius: 6px; margin: .5rem 0; }
+      .item audio { width: 100%; margin-top: .4rem; }
+      .err { background: #fef2f2; color: #991b1b; padding: .5rem; border-radius: 4px; margin: 1rem 0; display: none; }
+    </style>
+  </head>
+  <body>
+    <h1>audio/storage demo</h1>
+    <p>Upload audio — it's chunked like images. The players below fetch lazily via <code>downloadAsURL</code>.</p>
+    <div id="err" class="err"></div>
+    <label class="drop">
+      <span id="status">Click or drop an audio file</span>
+      <input type="file" id="file" accept="audio/*" hidden multiple />
+    </label>
+    <div id="list"></div>
+
+    <script type="module">
+      import { Multibase } from "../multibase.js";
+      import { FIREBASE_CONFIGS } from "../multibase.config.js";
+      const mb = new Multibase(FIREBASE_CONFIGS).init();
+      const $ = (id) => document.getElementById(id);
+
+      $("file").addEventListener("change", (e) => upload([...e.target.files]));
+      refresh().catch(err);
+
+      async function upload(files) {
+        if (!files.length) return;
+        $("status").textContent = `Uploading ${files.length}…`;
+        try {
+          for (const f of files) await mb.audio.upload(f, { name: f.name });
+          await refresh();
+        } catch (e) {
+          err(e);
+        } finally {
+          $("status").textContent = "Click or drop an audio file";
+        }
+      }
+
+      async function refresh() {
+        const manifests = await mb.audio.list({
+          orderBy: "_updatedAt",
+          orderDir: "desc",
+        });
+        $("list").innerHTML = manifests
+          .map(
+            (m) => `
+              <div class="item">
+                <strong>${(m.name || m.id).slice(0, 40)}</strong>
+                &nbsp;<small>${fmt(m.byteSize)} · ${m.chunkCount} chunks</small>
+                <audio controls preload="none" data-id="${m.id}"></audio>
+                <div><small><a href="#" data-del="${m.id}">delete</a></small></div>
+              </div>`
+          )
+          .join("");
+        $("list")
+          .querySelectorAll("audio")
+          .forEach(async (a) => {
+            a.addEventListener("play", async function once() {
+              a.removeEventListener("play", once);
+              a.src = await mb.audio.downloadAsURL(a.dataset.id);
+              a.play();
+            }, { once: true });
+          });
+        $("list")
+          .querySelectorAll("[data-del]")
+          .forEach((a) => {
+            a.onclick = async (e) => {
+              e.preventDefault();
+              await mb.audio.delete(a.dataset.del);
+              refresh();
+            };
+          });
+      }
+
+      function fmt(b) {
+        if (b == null) return "—";
+        if (b < 1024) return `${b} B`;
+        if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
+        return `${(b / 1048576).toFixed(2)} MB`;
+      }
+      function err(e) { $("err").style.display = "block"; $("err").textContent = e.message; }
+    </script>
+  </body>
+</html>

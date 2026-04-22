@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>images/storage — demo</title>
+    <style>
+      body { font: 14px/1.5 system-ui; max-width: 700px; margin: 2rem auto; padding: 0 1rem; color: #18181b; }
+      .drop { display: block; border: 2px dashed #d4d4d8; padding: 2rem; text-align: center; border-radius: 6px; cursor: pointer; color: #71717a; }
+      .drop:hover, .drop.busy { border-color: #2563eb; color: #2563eb; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: .5rem; margin-top: 1rem; }
+      .card { border: 1px solid #e4e4e7; border-radius: 6px; padding: .5rem; text-align: center; }
+      .card img { width: 100%; max-height: 140px; object-fit: contain; border-radius: 4px; }
+      .err { background: #fef2f2; color: #991b1b; padding: .5rem; border-radius: 4px; margin: 1rem 0; display: none; }
+    </style>
+  </head>
+  <body>
+    <h1>images/storage demo</h1>
+    <p>Paste (⌘V), drop, or click to upload. Each image is base64-chunked across your Firebase shards.</p>
+    <div id="err" class="err"></div>
+    <label class="drop" id="drop">
+      <span id="status">Click, drop, or paste</span>
+      <input type="file" id="file" accept="image/*" hidden multiple />
+    </label>
+    <div id="gallery" class="grid"></div>
+
+    <script type="module">
+      import { Multibase } from "../multibase.js";
+      import { FIREBASE_CONFIGS } from "../multibase.config.js";
+
+      const mb = new Multibase(FIREBASE_CONFIGS).init();
+      const $ = (id) => document.getElementById(id);
+
+      $("file").addEventListener("change", (e) => upload([...e.target.files]));
+      $("drop").addEventListener("dragover", (e) => { e.preventDefault(); $("drop").classList.add("busy"); });
+      $("drop").addEventListener("dragleave", () => $("drop").classList.remove("busy"));
+      $("drop").addEventListener("drop", (e) => {
+        e.preventDefault();
+        $("drop").classList.remove("busy");
+        upload([...e.dataTransfer.files].filter((f) => f.type.startsWith("image/")));
+      });
+      document.addEventListener("paste", (e) => {
+        upload(
+          [...(e.clipboardData?.items || [])]
+            .filter((i) => i.type.startsWith("image/"))
+            .map((i) => i.getAsFile())
+            .filter(Boolean)
+        );
+      });
+
+      refresh().catch(err);
+
+      async function upload(files) {
+        if (!files.length) return;
+        $("drop").classList.add("busy");
+        $("status").textContent = `Uploading ${files.length}…`;
+        try {
+          for (const f of files) await mb.images.upload(f, { name: f.name });
+          await refresh();
+        } catch (e) {
+          err(e);
+        } finally {
+          $("drop").classList.remove("busy");
+          $("status").textContent = "Click, drop, or paste";
+        }
+      }
+
+      async function refresh() {
+        const manifests = await mb.images.list({
+          orderBy: "_updatedAt",
+          orderDir: "desc",
+        });
+        const imgs = await Promise.all(
+          manifests.map(async (m) => ({
+            id: m.id,
+            url: await mb.images.downloadAsDataURL(m.id),
+            name: m.name || m.id,
+          }))
+        );
+        $("gallery").innerHTML = imgs
+          .map(
+            (i) => `
+              <div class="card">
+                <img src="${i.url}" alt="" />
+                <div><small>${i.name.slice(0, 18)} · <a href="#" data-del="${i.id}">del</a></small></div>
+              </div>`
+          )
+          .join("");
+        $("gallery")
+          .querySelectorAll("[data-del]")
+          .forEach((a) => {
+            a.onclick = async (e) => {
+              e.preventDefault();
+              await mb.images.delete(a.dataset.del);
+              refresh();
+            };
+          });
+      }
+
+      function err(e) {
+        $("err").style.display = "block";
+        $("err").textContent = e.message;
+      }
+    </script>
+  </body>
+</html>

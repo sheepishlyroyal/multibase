@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>audio/waveform — demo</title>
+    <style>
+      body { font: 14px/1.5 system-ui; max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+      audio, canvas { width: 100%; display: block; margin-top: 1rem; }
+      canvas { height: 100px; background: #f4f4f5; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <h1>audio/waveform demo</h1>
+    <p>
+      Pick an audio file — we decode it with WebAudio, extract peaks, and render
+      a mini-waveform. Everything runs in the browser; no upload.
+    </p>
+    <input type="file" id="file" accept="audio/*" />
+    <audio id="audio" controls></audio>
+    <canvas id="canvas" width="800" height="100"></canvas>
+
+    <script type="module">
+      import { AudioWaveform } from "./waveform.js";
+      const w = new AudioWaveform();
+      const canvas = document.getElementById("canvas");
+      document.getElementById("file").addEventListener("change", async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        document.getElementById("audio").src = URL.createObjectURL(file);
+        const peaks = await w.compute(file, { samples: 300 });
+        w.render(canvas, peaks, { color: "#2563eb", background: "#f4f4f5" });
+      });
+    </script>
+  </body>
+</html>

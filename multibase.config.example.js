@@ -1,12 +1,12 @@
 /**
  * Firebase project configs — one entry per shard.
  *
- * THIS IS A TEMPLATE. To run the demo:
+ * THIS IS A TEMPLATE. To use the library:
  *
- *   cp demo/firebase-config.example.js demo/firebase-config.js
+ *   cp multibase.config.example.js multibase.config.js
  *
- * Then edit your local `demo/firebase-config.js` (which is gitignored) and
- * fill in the fields below with real values from the Firebase console.
+ * Then edit your local `multibase.config.js` (which is gitignored) and fill
+ * in the fields below with real values from the Firebase console.
  *
  * HOW TO GET THE VALUES:
  *   1. Create two or more Firebase projects at https://console.firebase.google.com.

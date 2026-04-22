@@ -2,9 +2,26 @@
  * Multibase — shard a single logical database across multiple Firebase
  * projects to multiply free-tier storage and read/write quotas.
  *
- * Docs are routed to one shard by a stable hash of the document id, so single-doc
- * reads/writes hit exactly one project. List and query operations fan out to every
- * shard in parallel and merge the results client-side.
+ * This file is the main entry point. It exports the `Multibase` class, which
+ * init()s shard databases AND wires up three optional helper modules:
+ *
+ *   mb.images    — upload, download, lazy-load, blurhash, resize
+ *   mb.audio     — upload, format negotiation, waveform peaks
+ *   mb.firestore — pagination, TTL helpers, offline persistence
+ *
+ * Simplest possible use:
+ *
+ *   import { Multibase } from "./multibase.js";
+ *   import { FIREBASE_CONFIGS } from "./multibase.config.js";
+ *   const mb = new Multibase(FIREBASE_CONFIGS).init();
+ *
+ *   await mb.write("notes", { title: "hi" });
+ *   const note = await mb.read("notes", id);
+ *   await mb.images.upload(blob);
+ *
+ * If you drop this file into a project without the sibling folders, delete
+ * the three ImagesModule / AudioModule / FirestoreModule imports at the top
+ * of this file — the core class works standalone.
  */
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-app.js";
@@ -23,6 +40,10 @@ import {
   limit as firestoreLimit,
 } from "https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore.js";
 
+import { ImagesModule } from "./images/index.js";
+import { AudioModule } from "./audio/index.js";
+import { FirestoreModule } from "./firestore/index.js";
+
 const AUTO_ID_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const AUTO_ID_LENGTH = 20;
@@ -36,15 +57,11 @@ export class Multibase {
    */
   constructor(firebaseConfigs) {
     if (!Array.isArray(firebaseConfigs) || firebaseConfigs.length === 0) {
-      throw new Error(
-        "Multibase: firebaseConfigs must be a non-empty array"
-      );
+      throw new Error("Multibase: firebaseConfigs must be a non-empty array");
     }
     firebaseConfigs.forEach((config, i) => {
       if (!config || typeof config.projectId !== "string") {
-        throw new Error(
-          `Multibase: config at index ${i} is missing projectId`
-        );
+        throw new Error(`Multibase: config at index ${i} is missing projectId`);
       }
     });
     this.firebaseConfigs = firebaseConfigs;
@@ -54,7 +71,7 @@ export class Multibase {
     this.initialized = false;
   }
 
-  /** Initialize every underlying Firebase app. Safe to call once. */
+  /** Initialize every underlying Firebase app and wire up helper modules. */
   init() {
     if (this.initialized) return this;
     this.apps = this.firebaseConfigs.map((config, i) =>
@@ -62,8 +79,43 @@ export class Multibase {
     );
     this.databases = this.apps.map((app) => getFirestore(app));
     this.initialized = true;
+
+    this.images = new ImagesModule(this);
+    this.audio = new AudioModule(this);
+    this.firestore = new FirestoreModule(this);
+
     return this;
   }
+
+  // -------------------------------------------------------------------------
+  //  Friendly aliases — same semantics as set/get, shorter to type.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Write a document.
+   *   mb.write("notes", { title: "hi" })          // auto id
+   *   mb.write("notes", "my-id", { title: "hi" }) // explicit id
+   */
+  async write(collectionName, idOrData, maybeData) {
+    if (maybeData === undefined) {
+      if (idOrData && typeof idOrData === "object") {
+        return this.set(collectionName, null, idOrData);
+      }
+      throw new Error(
+        "Multibase.write: pass either (collection, data) or (collection, id, data)"
+      );
+    }
+    return this.set(collectionName, idOrData, maybeData);
+  }
+
+  /** Read a document by id. Alias for `get`. Returns null if not found. */
+  async read(collectionName, docId) {
+    return this.get(collectionName, docId);
+  }
+
+  // -------------------------------------------------------------------------
+  //  Core CRUD
+  // -------------------------------------------------------------------------
 
   /** Write or overwrite a document. Pass `null` as docId to auto-generate one. */
   async set(collectionName, docId, data) {
@@ -119,9 +171,6 @@ export class Multibase {
    * Query documents across every shard and merge results.
    * @param {Array<{field: string, op: string, value: any}>} filters Firestore where-clauses
    * @param {{ orderBy?: string, orderDir?: "asc"|"desc", limit?: number }} options
-   *
-   * Note: orderBy/limit are applied *inside* each shard AND again after merge. Cross-shard
-   * ordering is only consistent on fields present in every matching document.
    */
   async query(collectionName, filters = [], options = {}) {
     this._ensureInitialized();
@@ -218,8 +267,7 @@ export class Multibase {
     return this._hashKey(key) % this.shardCount;
   }
 
-  // FNV-1a 32-bit. Fast, deterministic across runs, and evenly distributed for
-  // short keys like document ids — which is all we hash here.
+  // FNV-1a 32-bit. Fast, deterministic, and evenly distributed for short keys.
   _hashKey(key) {
     const str = String(key);
     let hash = 0x811c9dc5;

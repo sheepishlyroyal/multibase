@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>images/blurhash — demo</title>
+    <style>
+      body { font: 14px/1.5 system-ui; max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+      .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; }
+      .cols img { width: 100%; border: 1px solid #e4e4e7; border-radius: 4px; }
+      code { background: #f4f4f5; padding: .2rem .4rem; border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <h1>images/blurhash demo</h1>
+    <p>
+      Pick any image — it's encoded to a short hash, then the hash is decoded
+      back to a blurred placeholder. All client-side; no Firebase needed.
+    </p>
+    <input type="file" id="file" accept="image/*" />
+    <div id="result" hidden>
+      <p><strong>Hash:</strong> <code id="hash"></code></p>
+      <div class="cols">
+        <div><strong>Original</strong><br /><img id="orig" /></div>
+        <div><strong>Blurhash preview</strong><br /><img id="preview" /></div>
+      </div>
+    </div>
+
+    <script type="module">
+      import { ImagesBlurhash } from "./blurhash.js";
+      const bh = new ImagesBlurhash();
+      document.getElementById("file").addEventListener("change", async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const hash = await bh.encode(file);
+        document.getElementById("hash").textContent = hash;
+        document.getElementById("orig").src = URL.createObjectURL(file);
+        document.getElementById("preview").src = bh.decode(hash, {
+          width: 200,
+          height: 200,
+        });
+        document.getElementById("result").hidden = false;
+      });
+    </script>
+  </body>
+</html>

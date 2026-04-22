@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>firestore/offline — demo</title>
+    <style>
+      body { font: 14px/1.5 system-ui; max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+      button { padding: .5rem 1rem; margin: .25rem; border: 1px solid #e4e4e7; border-radius: 6px; background: white; cursor: pointer; }
+      .log { background: #18181b; color: #f4f4f5; padding: 1rem; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; height: 280px; overflow: auto; white-space: pre; }
+    </style>
+  </head>
+  <body>
+    <h1>firestore/offline demo</h1>
+    <p>
+      Enable IndexedDB persistence, then toggle the network. Reads after
+      <code>goOffline()</code> come from local cache; writes queue and
+      flush on reconnect.
+    </p>
+    <p>
+      <button id="enable">enable()</button>
+      <button id="off">goOffline()</button>
+      <button id="on">goOnline()</button>
+      <button id="write">write a note</button>
+      <button id="read">read all notes</button>
+    </p>
+    <div class="log" id="log"></div>
+
+    <script type="module">
+      import { Multibase } from "../multibase.js";
+      import { FIREBASE_CONFIGS } from "../multibase.config.js";
+      const mb = new Multibase(FIREBASE_CONFIGS).init();
+
+      const logEl = document.getElementById("log");
+      const log = (s) => {
+        logEl.textContent += s + "\n";
+        logEl.scrollTop = logEl.scrollHeight;
+      };
+
+      document.getElementById("enable").onclick = async () => {
+        const out = await mb.firestore.offline.enable();
+        log("enable() → " + JSON.stringify(out));
+      };
+      document.getElementById("off").onclick = async () => {
+        await mb.firestore.offline.goOffline();
+        log("goOffline() — network down");
+      };
+      document.getElementById("on").onclick = async () => {
+        await mb.firestore.offline.goOnline();
+        log("goOnline() — network up, queued writes flush");
+      };
+      document.getElementById("write").onclick = async () => {
+        const r = await mb.write("notes", {
+          msg: "ping " + new Date().toISOString(),
+        });
+        log(`wrote ${r.id} to shard ${r.shardIndex}`);
+      };
+      document.getElementById("read").onclick = async () => {
+        const all = await mb.list("notes");
+        log(`read ${all.length} note(s)`);
+      };
+    </script>
+  </body>
+</html>

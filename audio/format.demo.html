@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>audio/format — demo</title>
+    <style>
+      body { font: 14px/1.5 system-ui; max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+      table { border-collapse: collapse; margin-top: 1rem; min-width: 300px; }
+      th, td { border: 1px solid #e4e4e7; padding: .4rem .8rem; text-align: left; }
+      .yes { background: #dcfce7; }
+      .maybe { background: #fef9c3; }
+      .no { background: #fee2e2; }
+      code { background: #f4f4f5; padding: .15rem .35rem; border-radius: 3px; }
+    </style>
+  </head>
+  <body>
+    <h1>audio/format demo</h1>
+    <p>What this browser reports for each codec. Pure feature detection — no Firebase, no upload.</p>
+    <table>
+      <thead><tr><th>Format</th><th>canPlayType</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <p style="margin-top: 1rem">
+      <strong>pickBest(["opus", "webm", "mp3", "wav"]):</strong>
+      <code id="best"></code>
+    </p>
+
+    <script type="module">
+      import { AudioFormat } from "./format.js";
+      const f = new AudioFormat();
+      const formats = ["opus", "oggopus", "webm", "mp3", "m4a", "aac", "wav", "flac"];
+      document.getElementById("tbody").innerHTML = formats
+        .map((name) => {
+          const v = f.canPlay(name) || "(empty = no)";
+          const cls = v === "probably" ? "yes" : v === "maybe" ? "maybe" : "no";
+          return `<tr class="${cls}"><td><code>${name}</code></td><td>${v}</td></tr>`;
+        })
+        .join("");
+      document.getElementById("best").textContent =
+        f.pickBest(["opus", "webm", "mp3", "wav"]) ?? "(nothing matched)";
+    </script>
+  </body>
+</html>
